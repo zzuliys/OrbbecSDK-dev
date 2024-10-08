@@ -15,7 +15,29 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/opt.h>
 }
+
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+
+#include <fstream>
+
 int index = 0;
+
+std::queue<std::shared_ptr<ob::ColorFrame>> frameQueue;
+std::mutex queueMutex;
+std::condition_variable queueCondition;
+
+void saveToBinFile(uint8_t* data, size_t size, const std::string& filename) {
+    std::ofstream file(filename, std::ios::binary);
+    if (file.is_open()) {
+        file.write(reinterpret_cast<char*>(data), size);
+        file.close();
+        std::cout << "Data saved to " << filename << std::endl;
+    } else {
+        std::cerr << "Unable to open file " << filename << std::endl;
+    }
+}
 
 void H264ToRGB(uint8_t* data, unsigned int dataSize, unsigned char* outBuffer) 
 {
@@ -68,6 +90,9 @@ void H264ToRGB(uint8_t* data, unsigned int dataSize, unsigned char* outBuffer)
             // 检查帧格式
             // std::cout << "YUVFrame pixel format: " << av_get_pix_fmt_name((AVPixelFormat)YUVFrame->format) << std::endl;
 
+            // std::cout << "Y plane stride: " << YUVFrame->linesize[0] << std::endl;
+            // std::cout << "UV plane stride: " << YUVFrame->linesize[1] << std::endl;
+
             // 5. YUV 转 RGB24 (使用 NV12 作为源格式)
             AVFrame* RGB24Frame = av_frame_alloc();
             struct SwsContext* convertCxt = sws_getContext(
@@ -75,6 +100,12 @@ void H264ToRGB(uint8_t* data, unsigned int dataSize, unsigned char* outBuffer)
                 YUVFrame->width, YUVFrame->height, AV_PIX_FMT_RGB24,
                 SWS_BILINEAR, NULL, NULL, NULL
             );
+            // struct SwsContext* convertCxt = sws_getContext(
+            //     YUVFrame->width, YUVFrame->height, AV_PIX_FMT_NV12,  // NV12 源格式
+            //     YUVFrame->width, YUVFrame->height, AV_PIX_FMT_RGB24,  // RGB 目标格式
+            //     SWS_LANCZOS, NULL, NULL, NULL  // 使用更好的缩放算法
+            // );
+
 
             // 确保数据指针有效
             if (!YUVFrame->data[0] || !YUVFrame->data[1]) {
@@ -160,7 +191,44 @@ void H264ToRGB(uint8_t* data, unsigned int dataSize, unsigned char* outBuffer)
 //     // avcodec_free_context(&codecCtx);
 // }
 
+void frameProcess(){
+    while(true) {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        queueCondition.wait(lock, []{ return!frameQueue.empty(); });
+        auto colorFrame = frameQueue.front();
+        frameQueue.pop();
 
+        auto width = colorFrame->width();
+        auto height = colorFrame->height();
+        auto rgb24DataFrame = ob::FrameHelper::createVideoFrame(OB_FRAME_COLOR, OB_FORMAT_RGB, width, height, 0);
+        auto rgb24Data = static_cast<uint8_t *>(rgb24DataFrame->data());
+
+        auto data = reinterpret_cast<uint8_t *>(colorFrame->data());
+        auto size = colorFrame->dataSize();
+        H264ToRGB(data, size, rgb24Data);
+
+        // std::cout << sizeof(data) <<std::endl;
+        // std::cout << sizeof(rgb24Data) <<std::endl;
+
+
+        // cv::Mat img(height, width, CV_8UC3, rgb24Data);
+        // try {
+        //     std::string saveName = "./out/test" + std::to_string(index++);
+        //     std::string saveFormat = ".bin";
+        //     std::string savePath = saveName + saveFormat;
+        //     // cv::imwrite(savePath, img);
+
+        //     saveToBinFile(rgb24Data, sizeof(rgb24Data), savePath);
+
+        //     // cv::namedWindow("Display window", cv::WINDOW_NORMAL);
+        //     // cv::resizeWindow("Display window", 800, 600);
+        //     // cv::imshow("Display window", img);
+        // }
+        // catch(...) {
+        
+        // }
+    }
+}
 
 int main() try {
     // Create a pipeline with default device
@@ -177,7 +245,7 @@ int main() try {
         if(colorProfileList) {
             // Open the default profile of Color Sensor, which can be configured through the configuration file
             colorProfile = colorProfileList->getVideoStreamProfile(3840, 2160, OB_FORMAT_H264, 25);
-            // colorProfile = colorProfileList->getVideoStreamProfile(3840, 2160, OB_FORMAT_H264, 30);
+            // colorProfile = colorProfileList->getVideoStreamProfile(1920, 1080, OB_FORMAT_H264, 30);
         }
         config->enableStream(colorProfile);
     }
@@ -189,7 +257,12 @@ int main() try {
     // Start the pipeline with config
     pipe.start(config);
 
-    while(true) {
+    std::thread consumerThread1(frameProcess);
+
+    // Create a window for rendering and set the resolution of the window.
+    ob_smpl::CVWindow win("Color");
+
+    while(win.run()) {
         // Wait for up to 100ms for a frameset in blocking mode.
         auto frameSet = pipe.waitForFrames(100);
         if(frameSet == nullptr) {
@@ -202,29 +275,38 @@ int main() try {
             continue;
         }
 
-        auto width = colorFrame->width();
-        auto height = colorFrame->height();
-        auto rgb24DataFrame = ob::FrameHelper::createVideoFrame(OB_FRAME_COLOR, OB_FORMAT_RGB, width, height, 0);
-        auto rgb24Data = static_cast<uint8_t *>(rgb24DataFrame->data());
-
-        auto data = reinterpret_cast<uint8_t *>(colorFrame->data());
-        auto size = colorFrame->dataSize();
-        H264ToRGB(data, size, rgb24Data);
-
-        cv::Mat img(height, width, CV_8UC3, rgb24Data);
-        try {
-            std::string saveName = "./out/test" + std::to_string(index++);
-            std::string saveFormat = ".jpg";
-            std::string savePath = saveName + saveFormat;
-            cv::imwrite(savePath, img);
-
-            // cv::namedWindow("Display window", cv::WINDOW_NORMAL);
-            // cv::resizeWindow("Display window", 800, 600);
-            // cv::imshow("Display window", img);
+        std::unique_lock<std::mutex> lock(queueMutex);
+        // std::cout << "framesize: " << frameQueue.size() << std::endl;
+        if(frameQueue.size() > 500){
+            frameQueue.pop();
+            std::cout << "pop frame" << std::endl;
         }
-        catch(...) {
+        frameQueue.push(colorFrame);
+        queueCondition.notify_one();
+
+        // auto width = colorFrame->width();
+        // auto height = colorFrame->height();
+        // auto rgb24DataFrame = ob::FrameHelper::createVideoFrame(OB_FRAME_COLOR, OB_FORMAT_RGB, width, height, 0);
+        // auto rgb24Data = static_cast<uint8_t *>(rgb24DataFrame->data());
+
+        // auto data = reinterpret_cast<uint8_t *>(colorFrame->data());
+        // auto size = colorFrame->dataSize();
+        // H264ToRGB(data, size, rgb24Data);
+
+        // cv::Mat img(height, width, CV_8UC3, rgb24Data);
+        // try {
+        //     std::string saveName = "./out/test" + std::to_string(index++);
+        //     std::string saveFormat = ".jpg";
+        //     std::string savePath = saveName + saveFormat;
+        //     cv::imwrite(savePath, img);
+
+        //     // cv::namedWindow("Display window", cv::WINDOW_NORMAL);
+        //     // cv::resizeWindow("Display window", 800, 600);
+        //     cv::imshow("Display window", img);
+        // }
+        // catch(...) {
         
-        }
+        // }
 
     }
 
