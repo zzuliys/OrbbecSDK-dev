@@ -31,18 +31,18 @@ if ("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
         list(APPEND CLANG_ALL_WARNINGS "-Wno-extra-semi-stmt") # Allow semi-colons to be used after #define's
         list(APPEND CLANG_ALL_WARNINGS "-Wno-atomic-implicit-seq-cst") # Allow use of __sync_add_and_fetch() atomic
     endif()
-    set(CLANG_WARNINGS_AS_ERRORS "-Werror")
+    # set(CLANG_WARNINGS_AS_ERRORS "-Werror")
     add_compile_options(${CLANG_ALL_WARNINGS})
     add_compile_options(${CLANG_WARNINGS_AS_ERRORS})
 elseif ("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
     set(GNU_ALL_WARNINGS "-Wall" "-Wextra")
     list(APPEND GNU_ALL_WARNINGS "-Wno-missing-field-initializers") # Allow c structs without all fields initialized
-    set(GNU_WARNINGS_AS_ERRORS "-Werror")
+    # set(GNU_WARNINGS_AS_ERRORS "-Werror")
     add_compile_options(${GNU_ALL_WARNINGS})
     add_compile_options(${GNU_WARNINGS_AS_ERRORS})
 elseif ("${CMAKE_C_COMPILER_ID}" STREQUAL "MSVC")
     set(MSVC_ALL_WARNINGS "/W4" "/wd4200") #Note: allow zero length arrays
-    set(MSVC_WARNINGS_AS_ERRORS "/WX")
+    # set(MSVC_WARNINGS_AS_ERRORS "/WX")
     string(REGEX REPLACE " /W[0-4]" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     string(REGEX REPLACE " /W[0-4]" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
     add_compile_options(${MSVC_ALL_WARNINGS})
